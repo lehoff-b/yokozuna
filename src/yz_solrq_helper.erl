@@ -23,14 +23,14 @@
 -behavior(gen_server).
 
 %% api
--export([start_link/1, status/1, status/2]).
+-export([start_link/2, status/1, status/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 % solrq/helper interface
--export([index_ready/3, index_ready/2, index_batch/5]).
+-export([index_batch/5]).
 
 %% TODO: Dynamically pulse_instrument.
 -ifdef(PULSE).
@@ -63,29 +63,14 @@ debug_entries(Entries) ->
 %%% API
 %%%===================================================================
 
-start_link(Name) ->
-    gen_server:start_link({local, Name}, ?MODULE, [], []).
+start_link(Index, Partition) ->
+    gen_server:start_link({local, yz_solrq:helper_regname(Index, Partition)}, ?MODULE, [], []).
 
 status(Pid) ->
     status(Pid, 60000). % solr can block, long timeout by default
 
 status(Pid, Timeout) ->
     gen_server:call(Pid, status, Timeout).
-
--spec index_ready(index_name(), solrq_id()) -> ok.
-index_ready(Index, QPid) ->
-    HPid = yz_solrq:random_helper(),
-    index_ready(HPid, Index, QPid).
-
-%% @doc Mark the index as ready.  Separating into a two phase
-%%      rather than just blindly sending from the solrq adds the
-%%      backpressure on the KV vnode.
--spec index_ready(solrq_helper_id(), index_name(), solrq_id()) -> ok.
-index_ready(HPid, Index, QPid) when is_atom(HPid); is_pid(HPid) ->
-    gen_server:cast(HPid, {ready, Index, QPid});
-index_ready(Hash, Index, QPid) ->
-    HPid = yz_solrq:helper_regname(Hash),
-    index_ready(HPid, Index, QPid).
 
 %% @doc Index a batch
 -spec index_batch(solrq_helper_id(),
@@ -108,8 +93,8 @@ handle_call(status, _From, State) ->
 handle_call(BadMsg, _From, State) ->
     {reply, {error, {unknown, BadMsg}}, State}.
 
-handle_cast({ready, Index, QPid}, State) ->
-    yz_solrq_worker:request_batch(QPid, Index, self()),
+handle_cast({ready, QPid}, State) ->
+    yz_solrq_worker:request_batch(QPid, self()),
     {noreply, State};
 handle_cast({batch, Index, BatchMax, QPid, Entries}, State) ->
     ?PULSE_DEBUG("Handling batch for index ~p.  Entries: ~p~n", [Index, debug_entries(Entries)]),
@@ -122,7 +107,7 @@ handle_cast({batch, Index, BatchMax, QPid, Entries}, State) ->
             ?PULSE_DEBUG("Error handling batch for index ~p.  Undelivered: ~p~n", [Index, debug_entries(Undelivered)]),
             {length(Entries) - length(Undelivered), {retry, Undelivered}}
     end,
-    yz_solrq_worker:batch_complete(QPid, Index, Message),
+    yz_solrq_worker:batch_complete(QPid, Message),
     {noreply, State}.
 
 %%%===================================================================
@@ -285,23 +270,21 @@ get_ops_for_entry_action(Action, _ObjValues, LI, P, Obj, BKey,
                                        {ok, SuccessEntries :: solr_entries()} |
                                        {error, tuple()}.
 send_solr_ops_for_entries(Index, Ops, Entries) ->
-    try
-        T1 = os:timestamp(),
-        ok = yz_solr:index_batch(Index, prepare_ops_for_batch(Ops)),
-        yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),
-        ok
-    catch _:Err ->
-            yz_stat:index_fail(),
-            Trace = erlang:get_stacktrace(),
+    T1 = os:timestamp(),
+    case yz_solr:index_batch(Index, prepare_ops_for_batch(Ops)) of
+        ok ->
+            yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),
+            ok;
+        {error, {Reason, _Detail}} = Err when Reason =:= badrequest; Reason =:= bad_data ->
             ?DEBUG("batch for index ~s failed.  Error: ~p~n", [Index, Err]),
-            case Err of
-                {_, Reason, _} when Reason =:= badrequest; Reason =:= bad_data ->
+            yz_stat:index_fail(),
                     handle_bad_entries(Index, Ops, Entries);
-                _ ->
-                    ?ERROR("Updating a batch of Solr operations failed for index ~p with error ~p", [Index, Err]),
-                    yz_fuse:melt(Index),
-                    {error, {Err, Trace}}
-            end
+        Err ->
+            ?DEBUG("batch for index ~s failed.  Error: ~p~n", [Index, Err]),
+            ?ERROR("Updating a batch of Solr operations failed for index ~p with error ~p", [Index, Err]),
+            yz_fuse:melt(Index),
+            Trace = erlang:get_stacktrace(),
+            {error, {Err, Trace}}
     end.
 
 handle_bad_entries(Index, Ops, Entries) ->
@@ -321,30 +304,33 @@ handle_bad_entries(Index, Ops, Entries) ->
 %%      successful ops and applying side-effects to Solr.
 -spec send_solr_single_ops(index_name(), solr_ops()) -> GoodOps :: solr_ops().
 send_solr_single_ops(Index, Ops) ->
-    lists:takewhile(
-      fun(Op) ->
-              try
-                  T1 = os:timestamp(),
-                  ok = yz_solr:index_batch(Index, prepare_ops_for_batch([Op])),
-                  yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),
-                  true
-              catch _:Err ->
-                      %% TODO This results in double counting index failures when
-                      %% we get a bad request back from Solr.
-                      %% We should probably refine our stats so that
-                      %% they differentiate between bad data and Solr going wonky
-                      yz_stat:index_fail(),
-                      case Err of
-                          {_, Reason, _} when Reason =:= badrequest; Reason =:= bad_data ->
-                              ?ERROR("Updating a single Solr operation failed for index ~p with bad request.", [Index]),
-                              true;
-                          _ ->
-                              ?ERROR("Updating a single Solr operation failed for index ~p with error ~p", [Index, Err]),
-                              yz_fuse:melt(Index),
-                              false
-                      end
-              end
-      end, Ops).
+  lists:takewhile(fun(Op) ->
+                      single_op_batch(Index, Op)
+                  end,
+                  Ops).
+
+
+single_op_batch(Index, Op) ->
+  Ops = prepare_ops_for_batch([Op]),
+  case yz_solr:index_batch(Index, Ops) of
+    ok ->
+      T1 = os:timestamp(),
+      yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),
+      true;
+    %% TODO This results in double counting index failures when
+    %% we get a bad request back from Solr.
+    %% We should probably refine our stats so that
+    %% they differentiate between bad data and Solr going wonky
+    {error, {Reason, _Details}} when Reason =:= badrequest; Reason =:= bad_data ->
+      yz_stat:index_fail(),
+      ?ERROR("Updating a single Solr operation failed for index ~p with bad request.", [Index]),
+      true;
+    Err ->
+      yz_stat:index_fail(),
+      ?ERROR("Updating a single Solr operation failed for index ~p with error ~p", [Index, Err]),
+      yz_fuse:melt(Index),
+      false
+  end.
 
 -spec update_aae_and_repair_stats(solr_entries()) -> ok.
 update_aae_and_repair_stats(Entries) ->
