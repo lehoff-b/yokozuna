@@ -318,8 +318,7 @@ confirm_purge_strategy(Cluster, PBConn) ->
     ok.
 
 confirm_purge_one_strategy(Cluster, PBConn, Bucket1Index1) ->
-    PurgeResults = do_purge(Cluster, PBConn, Bucket1Index1,
-                            ?PURGE_ONE),
+    PurgeResults = do_purge(Cluster, PBConn, Bucket1Index1, ?PURGE_ONE),
     check_one_purged(PurgeResults),
     lager:info("confirm_purge_one_strategy ok"),
     ok.
@@ -335,8 +334,7 @@ check_one_purged({Index1Written, Index1SearchResults} = TestResults) ->
     ok.
 
 confirm_purge_idx_strategy(Cluster, PBConn, Bucket1Index1) ->
-    PurgeResults = do_purge(Cluster, PBConn, Bucket1Index1,
-                            ?PURGE_IDX),
+    PurgeResults = do_purge(Cluster, PBConn, Bucket1Index1, ?PURGE_IDX),
     check_idx_purged(PurgeResults),
     lager:info("confirm_purge_idx_strategy ok"),
     ok.
@@ -401,10 +399,10 @@ first_purged([_H|T] = _Written, Searched) ->
 %% of this function.
 %%
 do_purge([Node|_] = Cluster, PBConn,
-         {Bucket1, Index1},
+         {Bucket, Index},
          PurgeStrategy) ->
     yz_rt:set_purge_strategy(Cluster, PurgeStrategy),
-    yz_rt:set_index(Cluster, Index1, 1, 100, 99999),
+    yz_rt:set_index(Cluster, Index, 1, 100, 99999),
     yz_rt:set_hwm(Cluster, 4),
     TargetPartition = 1096126227998177188652763624537212264741949407232,
     %%
@@ -412,12 +410,12 @@ do_purge([Node|_] = Cluster, PBConn,
     %% Each representative in the list is a unique key
     %% that hashes to the target partition.
     %%
-    Index1BKeys = find_representative_bkeys(TargetPartition, Index1, Bucket1),
-    Index1BKey1 = lists:nth(1, Index1BKeys),
-    Index1BKey2 = lists:nth(2, Index1BKeys),
-    Index1BKey3 = lists:nth(3, Index1BKeys),
-    Index1BKey4 = lists:nth(4, Index1BKeys),
-    Index1BKey5 = lists:nth(5, Index1BKeys),
+    RepresentativeKeys = find_representative_bkeys(TargetPartition, Index, Bucket),
+    Key1 = lists:nth(1, RepresentativeKeys),
+    Key2 = lists:nth(2, RepresentativeKeys),
+    Key3 = lists:nth(3, RepresentativeKeys),
+    Key4 = lists:nth(4, RepresentativeKeys),
+    Key5 = lists:nth(5, RepresentativeKeys),
     try
         yz_rt:load_intercept_code(Node),
         yz_rt:intercept_index_batch(Node, index_batch_returns_other_error),
@@ -427,20 +425,20 @@ do_purge([Node|_] = Cluster, PBConn,
         %% because fuse blown events are handled asynchronously,
         %% we need to wait until the solrq is blown.
         %%
-        [Index1BKey1] = put_bkey_objects(PBConn, [Index1BKey1]),
-        [Index1BKey2] = put_bkey_objects(PBConn, [Index1BKey2]),
-        [Index1BKey3] = put_bkey_objects(PBConn, [Index1BKey3]),
-        [Index1BKey4] = put_bkey_objects(PBConn, [Index1BKey4]),
-        yz_rt:wait_until_fuses_blown(Node, TargetPartition, [Index1]),
+        [Key1] = put_bkey_objects(PBConn, [Key1]),
+        [Key2] = put_bkey_objects(PBConn, [Key2]),
+        [Key3] = put_bkey_objects(PBConn, [Key3]),
+        [Key4] = put_bkey_objects(PBConn, [Key4]),
+        yz_rt:wait_until_fuses_blown(Node, TargetPartition, [Index]),
         %%
         %% At this point, the target solrq corresponding
         %% to {TargetPartition, Index1}, should be blown.
         %% Send one more message through the Indexq, which
         %% will trigger a purge.
         %%
-        yz_rt:set_index(Cluster, Index1, 1, 100, 99999),
+        yz_rt:set_index(Cluster, Index, 1, 100, 99999),
         F = fun() ->
-            [Index1BKey5] = put_bkey_objects(PBConn, [Index1BKey5])
+            [Key5] = put_bkey_objects(PBConn, [Key5])
         end,
         case PurgeStrategy of
             %% If testing PURGE_NONE, all vnodes are blocked
@@ -458,17 +456,17 @@ do_purge([Node|_] = Cluster, PBConn,
         %% fuse to reset.  Commit to Solr so that we can run a query.
         %%
         yz_rt:intercept_index_batch(Node, index_batch_call_orig),
-        yz_rt:wait_until_fuses_reset(Node, TargetPartition, [Index1]),
+        yz_rt:wait_until_fuses_reset(Node, TargetPartition, [Index]),
         yz_rt:drain_solrqs(Node),
-        yz_rt:commit(Cluster, Index1)
+        yz_rt:commit(Cluster, Index)
     end,
     %%
-    %% Return the search results for Index1.
+    %% Return the search results for the index.
     %% The first list is the set of bkeys we wrote.
     %% The second list is the set that are available for search.
     %%
-    Index1SearchBKeys = search_bkeys(PBConn, Index1),
-    {[Index1BKey1, Index1BKey2, Index1BKey3, Index1BKey4, Index1BKey5], Index1SearchBKeys}.
+    KeysFound = search_bkeys(PBConn, Index),
+    {[Key1, Key2, Key3, Key4, Key5], KeysFound}.
 
 -spec search_bkeys(pid(), index_name()) -> [bkey()].
 search_bkeys(PBConn, Index) ->

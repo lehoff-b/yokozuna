@@ -41,7 +41,7 @@
 %% @end
 %%--------------------------------------------------------------------
 -spec(start_link(index_name(), p()) ->
-    {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
+    {ok, Pid :: pid()} | {error, Reason :: term()}).
 start_link(Index, Partition) ->
     supervisor:start_link(?MODULE, [Index, Partition]).
 
@@ -63,8 +63,7 @@ start_link(Index, Partition) ->
     {ok, {SupFlags :: {RestartStrategy :: supervisor:strategy(),
         MaxR :: non_neg_integer(), MaxT :: non_neg_integer()},
         [ChildSpec :: supervisor:child_spec()]
-    }} |
-    ignore).
+    }}).
 init([Index, Partition]) ->
     RestartStrategy = one_for_all,
     MaxRestarts = 10,
@@ -83,9 +82,11 @@ init([Index, Partition]) ->
 
 
 helper_spec(Index, Partition) ->
-    Id = {helper, Index, Partition},
-    {Id, {yz_solrq_helper, start_link, [Index, Partition]}, permanent, 5000, worker, [yz_solrq_helper]}.
+    child_spec(helper, yz_solrq_helper, Index, Partition).
 
 worker_spec(Index, Partition) ->
-    Id = {worker, Index, Partition},
-    {Id, {yz_solrq_worker, start_link, [Index, Partition]}, permanent, 5000, worker, [yz_solrq_worker]}.
+    child_spec(worker, yz_solrq_worker, Index, Partition).
+
+child_spec(Type, Module, Index, Partition) ->
+    {{Type, Index, Partition}, {Module, start_link, [Index, Partition]},
+     permanent, 5000, worker, [Module]}.

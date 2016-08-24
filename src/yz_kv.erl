@@ -147,7 +147,7 @@ get_index_from_bucket_props(BProps) ->
     proplists:get_value(?YZ_INDEX, BProps, ?YZ_INDEX_TOMBSTONE).
 
 is_search_enabled_for_bucket(BucketProps) ->
-    yz_kv:get_index_from_bucket_props(BucketProps) =/=
+    get_index_from_bucket_props(BucketProps) =/=
         ?YZ_INDEX_TOMBSTONE.
 
 %% @doc Called by KV vnode to determine if handoff should start or

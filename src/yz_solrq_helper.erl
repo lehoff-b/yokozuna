@@ -93,9 +93,6 @@ handle_call(status, _From, State) ->
 handle_call(BadMsg, _From, State) ->
     {reply, {error, {unknown, BadMsg}}, State}.
 
-handle_cast({ready, QPid}, State) ->
-    yz_solrq_worker:request_batch(QPid, self()),
-    {noreply, State};
 handle_cast({batch, Index, BatchMax, QPid, Entries}, State) ->
     ?PULSE_DEBUG("Handling batch for index ~p.  Entries: ~p~n", [Index, debug_entries(Entries)]),
     Message = case do_batches(Index, BatchMax, [], Entries) of
@@ -210,7 +207,7 @@ update_solr(Index, LI, Entries) ->
 %% @doc Build the SOLR query
 -spec solr_ops(logical_idx(), solr_entries()) -> solr_ops().
 solr_ops(LI, Entries) ->
-      [get_ops_for_entry(Entry, LI) || Entry <- Entries].
+    [get_ops_for_entry(Entry, LI) || Entry <- Entries].
 
 -spec get_ops_for_entry(solr_entry(), logical_idx()) -> solr_ops().
 get_ops_for_entry({BKey, Obj0, Reason, P, ShortPL, Hash}, LI) ->
@@ -278,7 +275,7 @@ send_solr_ops_for_entries(Index, Ops, Entries) ->
         {error, {Reason, _Detail}} = Err when Reason =:= badrequest; Reason =:= bad_data ->
             ?DEBUG("batch for index ~s failed.  Error: ~p~n", [Index, Err]),
             yz_stat:index_fail(),
-                    handle_bad_entries(Index, Ops, Entries);
+            handle_bad_entries(Index, Ops, Entries);
         Err ->
             ?DEBUG("batch for index ~s failed.  Error: ~p~n", [Index, Err]),
             ?ERROR("Updating a batch of Solr operations failed for index ~p with error ~p", [Index, Err]),
@@ -304,33 +301,33 @@ handle_bad_entries(Index, Ops, Entries) ->
 %%      successful ops and applying side-effects to Solr.
 -spec send_solr_single_ops(index_name(), solr_ops()) -> GoodOps :: solr_ops().
 send_solr_single_ops(Index, Ops) ->
-  lists:takewhile(fun(Op) ->
+    lists:takewhile(fun(Op) ->
                       single_op_batch(Index, Op)
                   end,
                   Ops).
 
 
 single_op_batch(Index, Op) ->
-  Ops = prepare_ops_for_batch([Op]),
-  case yz_solr:index_batch(Index, Ops) of
-    ok ->
-      T1 = os:timestamp(),
-      yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),
-      true;
-    %% TODO This results in double counting index failures when
-    %% we get a bad request back from Solr.
-    %% We should probably refine our stats so that
-    %% they differentiate between bad data and Solr going wonky
-    {error, {Reason, _Details}} when Reason =:= badrequest; Reason =:= bad_data ->
-      yz_stat:index_fail(),
-      ?ERROR("Updating a single Solr operation failed for index ~p with bad request.", [Index]),
-      true;
-    Err ->
-      yz_stat:index_fail(),
-      ?ERROR("Updating a single Solr operation failed for index ~p with error ~p", [Index, Err]),
-      yz_fuse:melt(Index),
-      false
-  end.
+    Ops = prepare_ops_for_batch([Op]),
+    case yz_solr:index_batch(Index, Ops) of
+        ok ->
+            T1 = os:timestamp(),
+            yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),
+            true;
+        %% TODO This results in double counting index failures when
+        %% we get a bad request back from Solr.
+        %% We should probably refine our stats so that
+        %% they differentiate between bad data and Solr going wonky
+        {error, {Reason, _Details}} when Reason =:= badrequest; Reason =:= bad_data ->
+            yz_stat:index_fail(),
+            ?ERROR("Updating a single Solr operation failed for index ~p with bad request.", [Index]),
+            true;
+        Err ->
+            yz_stat:index_fail(),
+            ?ERROR("Updating a single Solr operation failed for index ~p with error ~p", [Index, Err]),
+            yz_fuse:melt(Index),
+            false
+    end.
 
 -spec update_aae_and_repair_stats(solr_entries()) -> ok.
 update_aae_and_repair_stats(Entries) ->

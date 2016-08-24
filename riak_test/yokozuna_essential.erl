@@ -63,12 +63,14 @@ confirm() ->
             verify_non_existent_index(Cluster, <<"froot">>),
             {0, _} = yz_rt:load_data(Cluster, ?BUCKET, YZBenchDir, ?NUM_KEYS),
             yz_rt:commit(Cluster, ?INDEX),
+            verify_correct_solrqs(Cluster),
             %% Verify data exists before running join
             yz_rt:verify_num_match(Cluster, ?INDEX, ?NUM_KEYS),
             Cluster2 = join_rest(Cluster, Nodes),
             rt:wait_for_cluster_service(Cluster2, riak_kv),
             rt:wait_for_cluster_service(Cluster2, yokozuna),
             verify_non_owned_data_deleted(Cluster, ?INDEX),
+            verify_correct_solrqs(Cluster2),
             wait_for_indexes(Cluster2),
             ok = test_tagging_http(Cluster2),
             ok = test_tagging_pb(Cluster2),
@@ -79,7 +81,7 @@ confirm() ->
             verify_deletes(Cluster2, ?INDEX, ?NUM_KEYS, KeysDeleted),
             ok = test_escaped_key(Cluster2),
             verify_unique_id(Cluster2, PBConns),
-            %% verify_delete_index(Cluster2, PBConns),
+            verify_deleted_index_stops_solrqs(Cluster2, PBConns),
             yz_rt:close_pb_conns(PBConns),
             pass;
         {error, bb_driver_build_failed} ->
@@ -407,33 +409,19 @@ verify_deletes(Cluster, Index, NumKeys, KeysDeleted) ->
     yz_rt:verify_num_match(Cluster, Index, NumKeys - NumDeleted).
 
 
-verify_delete_index(Cluster, PBConns) ->
+verify_deleted_index_stops_solrqs(Cluster, PBConns) ->
     PBConn = hd(PBConns),
     yz_rt:really_remove_index(Cluster, ?BUCKET, ?INDEX, PBConn),
-    %% Make sure we've really removed data from Solr here!
-    validate_solrq_workers_stopped(Cluster).
+    verify_correct_solrqs(Cluster).
 
-validate_solrq_workers_stopped(Cluster) ->
-    Node = hd(Cluster),
-    F = fun() ->
-            Workers = rpc:call(Node, yz_solrq_sup, active_queues, []),
-            index_not_in_workers(Workers, ?INDEX)
-        end,
-    rt:wait_until(Node, F).
+verify_correct_solrqs(Cluster) ->
+    ?assertEqual(ok, rt:wait_until(Cluster, fun check_queues_match/1)).
 
-index_not_in_workers(Workers, Index) ->
-    not index_in_workers(Workers, Index).
-
-%% solrq names look like:
-%% yz_solrq_worker_913438523331814323877303020447676887284957839360__dont_index_
-index_in_workers(Workers, TargetIndex) ->
-    lists:any(fun(WorkerName) ->
-        IndexName = extract_index_from_worker_name(WorkerName),
-        TargetIndex == IndexName
-              end, Workers).
-
-extract_index_from_worker_name(WorkerName) ->
-        "yz_solrq_worker_" ++ Rest = atom_to_list(WorkerName),
-        "_" ++ IndexName = lists:dropwhile(fun(C) -> C =/= $_ end, Rest),
-    IndexName.
+check_queues_match(Node) ->
+    CurrentIndexes = rpc:call(Node, yz_index, get_indexes_from_meta, []),
+    OwnedPartitions = rt:partitions_for_node(Node),
+    ActiveQueues = rpc:call(Node, yz_solrq_sup, active_queues, []),
+    ExpectedQueueus = [{Index, Partition} || Index <- CurrentIndexes, Partition <- OwnedPartitions],
+    lager:debug("Validating correct Solr Queues are running. Node: ~p, Expected: ~p, Active:  ~p", [Node, ExpectedQueueus, ActiveQueues]),
+    lists:sort(ExpectedQueueus) == lists:sort(ActiveQueues).
 

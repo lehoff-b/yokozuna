@@ -31,8 +31,11 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
-% solrq/helper interface
--export([request_batch/2, drain/2, drain_complete/1, batch_complete/2]).
+%% solrq/helper interface
+-export([batch_complete/2]).
+
+%% drain manager interface
+-export([drain/2, drain_complete/1]).
 
 %% TODO: Dynamically pulse_instrument.  See test/pulseh.erl
 -ifdef(PULSE).
@@ -189,10 +192,6 @@ all_queue_len(Index, Partition) ->
 %%%===================================================================
 %%% solrq/helper interface
 %%%===================================================================
--spec request_batch(solrq_id(), solrq_helper_id()) -> ok.
-request_batch(QPid, HPid) ->
-    gen_server:cast(QPid, {request_batch, HPid}).
-
 
 -spec batch_complete(
     solrq_id(),
@@ -227,9 +226,8 @@ handle_call({set_hwm, NewHWM}, _From, #state{queue_hwm = OldHWM} = State) ->
     {reply, {ok, OldHWM}, maybe_unblock_vnodes(State#state{queue_hwm = NewHWM})};
 handle_call(get_hwm, _From, #state{queue_hwm = HWM} = State) ->
     {reply, HWM, State};
-handle_call({set_index, Min, Max, DelayMS}, _From,
-            State0) ->
-    State1= State0#state{batch_min = Min,
+handle_call({set_index, Min, Max, DelayMS}, _From, State0) ->
+    State1 = State0#state{batch_min = Min,
                           batch_max = Max,
                           delayms_max = DelayMS},
     State2 = maybe_send_batch_to_helper(State1),
@@ -391,8 +389,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% we simply have to requeue and continue.
 %% end
 %%
-handle_batch({retry, Undelivered},
-             State) ->
+handle_batch({retry, Undelivered}, State) ->
     State1 = requeue_undelivered(Undelivered, State),
     State1;
 

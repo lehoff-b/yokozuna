@@ -192,8 +192,7 @@ unlink_and_kill(Reference, Pid) ->
 
 -spec schedule_tick() -> reference().
 schedule_tick() ->
-    erlang:send_after(5000, ?MODULE, tick).
-
+    erlang:send_after(5000, ?SERVER, tick).
 
 maybe_exchange_fsm_drain_error(undefined, _Reason) ->
     ok;

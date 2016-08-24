@@ -517,17 +517,21 @@ remove_index(Node, BucketType) ->
     Props = [{?YZ_INDEX, ?YZ_INDEX_TOMBSTONE}],
     ok = rpc:call(Node, riak_core_bucket_type, update, [BucketType, Props]).
 
-really_remove_index(Cluster, {_BucketType, Bucket}, Index, PBConn) ->
+really_remove_index(Cluster, {BucketType, Bucket}, Index, PBConn) ->
     Node = hd(Cluster),
     F = fun(_) ->
-        Props = [{?YZ_INDEX, ?YZ_INDEX_TOMBSTONE}],
-        %% Remove index from bucket props and delete it
-        rpc:call(Node, riak_core_bucket, set_bucket, [Bucket, Props]),
-        DelResp = riakc_pb_socket:delete_search_index(PBConn, Index),
-        case DelResp of
-            ok -> true;
-            {error,<<"notfound">>} -> true
-        end
+                Props = [{?YZ_INDEX, ?YZ_INDEX_TOMBSTONE}],
+                %% Remove index from bucket props and delete it
+                rpc:call(Node, riak_core_bucket, set_bucket, [{BucketType, Bucket}, Props]),
+                remove_index(Node, BucketType),
+                DelResp = riakc_pb_socket:delete_search_index(PBConn, Index),
+                case DelResp of
+                    ok -> true;
+                    {error,<<"notfound">>} -> true;
+                    _ ->
+                        lager:info("Attempting to remove index ~p: Result was ~p", [Index, DelResp]),
+                        false
+                end
         end,
     yz_rt:wait_until(Cluster, F).
 
@@ -554,10 +558,10 @@ create_indexed_bucket(PBConn, Cluster, Bucket, Index) ->
     create_indexed_bucket(PBConn, Cluster, Bucket, Index, 1).
 
 -spec create_indexed_bucket(pid(),
-    cluster(),
-    {binary(), binary()},
-    index_name(),
-    pos_integer()) -> ok.
+                            cluster(),
+                            {binary(), binary()},
+                            index_name(),
+                            pos_integer()) -> ok.
 create_indexed_bucket(PBConn, Cluster, {BType, _Bucket}, Index, NVal) ->
     ok = riakc_pb_socket:create_search_index(PBConn, Index, <<>>, [{n_val, NVal}]),
     ok = set_bucket_type_index(Cluster, BType, Index, NVal).
@@ -650,7 +654,7 @@ wait_for_schema(Cluster, Name, Content) ->
                                 Name == proplists:get_value(name, PL);
                             _ ->
                                 (Name == proplists:get_value(name, PL)) and
-                                    (Content == proplists:get_value(content, PL))
+                                                                          (Content == proplists:get_value(content, PL))
                         end;
                     _ ->
                         false
@@ -672,7 +676,7 @@ verify_num_match(Type, Cluster, Index, Num) ->
     if Type =:= solr ->
             Shards = [{N, node_solr_port(N)} || N <- Cluster],
             search_expect(Cluster, Type, Index, "*", "*", Shards,
-                                Num);
+                          Num);
        true ->
             search_expect(Cluster, Type, Index, "*", "*", Num)
     end.
@@ -723,7 +727,7 @@ internal_solr_url(Host, Port, Index) ->
     ?FMT("http://~s:~B/internal_solr/~s", [Host, Port, Index]).
 
 -spec internal_solr_url(host(), portnum(), index_name(), [{host(), portnum()}])
-                   -> string().
+                       -> string().
 internal_solr_url(Host, Port, Index, Shards) ->
     internal_solr_url(Host, Port, Index, <<"*">>, <<"*">>, Shards).
 
@@ -828,9 +832,9 @@ rolling_upgrade(Node, Version, UpgradeConfig, WaitForServices) ->
 setup_drain_intercepts(Cluster) ->
     [load_intercept_code(Node) || Node <- Cluster],
     [rt_intercept:add(
-        N,
-        {yz_solrq_drain_mgr, [{{drain, 1}, delay_drain}]}
-    ) || N <- Cluster],
+       N,
+       {yz_solrq_drain_mgr, [{{drain, 1}, delay_drain}]}
+      ) || N <- Cluster],
     ok.
 
 -spec expire_aae_trees(cluster()) -> [ok].
@@ -854,7 +858,7 @@ clear_kv_trees(Cluster) ->
     [ok = rpc:call(Node, riak_kv_entropy_manager, clear_trees, []) || Node <- Cluster].
 
 -spec set_index(cluster(), index_name(), solrq_batch_min(), solrq_batch_max(),
-    solrq_batch_flush_interval()) -> {[any()],[atom()]}.
+                solrq_batch_flush_interval()) -> {[any()],[atom()]}.
 set_index(Cluster, Index, Min, Max, DelayMsMax) ->
     rpc:multicall(Cluster, yz_solrq, set_index, [Index, Min, Max, DelayMsMax]).
 
@@ -867,24 +871,24 @@ set_purge_strategy(Cluster, PurgeStrategy) ->
     rpc:multicall(Cluster, yz_solrq, set_purge_strategy, [PurgeStrategy]).
 
 -spec wait_until_fuses_blown(node() | cluster(), solrq_id(), [index_name()]) ->
-    ok | [ok].
+                                    ok | [ok].
 wait_until_fuses_blown(Cluster, Partition, Indices) when is_list(Cluster) ->
     [wait_until_fuses_blown(Node, Partition, Indices) || Node <- Cluster];
 wait_until_fuses_blown(Node, Partition, Indices) ->
     F = fun({Index, IndexQ}) ->
-        lager:info("Waiting for fuse to blow for index ~p", [{Index, IndexQ}]),
-        proplists:get_value(fuse_blown, IndexQ)
+                lager:info("Waiting for fuse to blow for index ~p", [{Index, IndexQ}]),
+                proplists:get_value(fuse_blown, IndexQ)
         end,
     check_fuse_status(Node, Partition, Indices, F).
 
 -spec wait_until_fuses_reset(node() | cluster(), module(), [index_name()]) ->
-    ok | [ok].
+                                    ok | [ok].
 wait_until_fuses_reset(Cluster, SolrqId, Indices) when is_list(Cluster) ->
     [wait_until_fuses_reset(Node, SolrqId, Indices) || Node <- Cluster];
 wait_until_fuses_reset(Node, SolrqId, Indices) ->
     F = fun({Index, IndexQ}) ->
-        lager:info("Waiting for fuse to reset for index ~p", [{Index, IndexQ}]),
-        not proplists:get_value(fuse_blown, IndexQ)
+                lager:info("Waiting for fuse to reset for index ~p", [{Index, IndexQ}]),
+                not proplists:get_value(fuse_blown, IndexQ)
         end,
     check_fuse_status(Node, SolrqId, Indices, F).
 
@@ -894,35 +898,35 @@ check_fuse_status(Node, Partition, Indices, FuseCheckFunction) ->
         [{Index, yz_solrq:worker_regname(Index, Partition)} ||
             Index <- Indices],
     F = fun(N) ->
-        Solrqs = rpc:call(N, yz_solrq, status, []),
-        IndexQs = [
-            begin
-                 Solrq = proplists:get_value(SolrqName, Solrqs),
-                 {Index, Solrq}
-             end ||
-            {Index, SolrqName} <- SolrQNames],
-        MatchingIndexQs = lists:filter(
-            FuseCheckFunction,
-            IndexQs
-        ),
-        MatchingIndices = [Index || {Index, _IndexQ} <- MatchingIndexQs],
-        sets:is_subset(sets:from_list(Indices), sets:from_list(MatchingIndices))
+                Solrqs = rpc:call(N, yz_solrq, status, []),
+                IndexQs = [
+                           begin
+                               Solrq = proplists:get_value(SolrqName, Solrqs),
+                               {Index, Solrq}
+                           end ||
+                              {Index, SolrqName} <- SolrQNames],
+                MatchingIndexQs = lists:filter(
+                                    FuseCheckFunction,
+                                    IndexQs
+                                   ),
+                MatchingIndices = [Index || {Index, _IndexQ} <- MatchingIndexQs],
+                sets:is_subset(sets:from_list(Indices), sets:from_list(MatchingIndices))
         end,
     wait_until([Node], F).
 
 -spec intercept_index_batch(node() | cluster(), module()) -> ok | [ok].
 intercept_index_batch(Cluster, Intercept) ->
     add_intercept(
-        Cluster,
-        yz_solr, index_batch, 2, Intercept).
+      Cluster,
+      yz_solr, index_batch, 2, Intercept).
 
 -spec add_intercept(node() | cluster(), module(), atom(), non_neg_integer(), module()) -> ok | [ok].
 add_intercept(Cluster, Module, Function, Arity, Intercept) when is_list(Cluster) ->
     [add_intercept(Node, Module, Function, Arity, Intercept) || Node <- Cluster];
 add_intercept(Node, Module, Function, Arity, Intercept) ->
     rt_intercept:add(
-        Node,
-        {Module, [{{Function, Arity}, Intercept}]}).
+      Node,
+      {Module, [{{Function, Arity}, Intercept}]}).
 
 -spec set_yz_aae_mode(node() | cluster(), automatic | manual) -> ok | [ok].
 set_yz_aae_mode(Cluster, Mode) when is_list(Cluster) ->
@@ -939,14 +943,14 @@ gen_keys(SeqMax) ->
                                binary_to_list(<<N:64/integer>>))].
 
 -spec check_stat_values(
-    proplists:proplist() | {error, Reason :: term()},
-    [{StatName::atom(), LHS::term(), Comparator::atom(), RHS::term()}])
-        -> boolean().
+        proplists:proplist() | {error, Reason :: term()},
+        [{StatName::atom(), LHS::term(), Comparator::atom(), RHS::term()}])
+                       -> boolean().
 check_stat_values(Stats, Pairs) ->
     lager:info("STATS: ~p", [Stats]),
     lager:info("Pairs: ~p", [Pairs]),
     StillWaiting = [S || S = {_, Value, Cmp, Arg} <- Pairs,
-        not (erlang:Cmp(Value, Arg))],
+                         not (erlang:Cmp(Value, Arg))],
     case StillWaiting of
         [] ->
             true;

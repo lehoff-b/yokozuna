@@ -53,12 +53,16 @@ start_queue_pair(Index, Partition) ->
 active_queues() ->
     PairSups = find_pair_supervisors(),
     PairChildren = lists:flatten([supervisor:which_children(Sup) || Sup <- PairSups]),
-    Workers = [{Index, Partition} || {{worker, Index, Partition}, _Child, _Type, Modules} <- PairChildren, Modules == [yz_solrq_worker]],
+    Workers = [{Index, Partition} ||
+               {{worker, Index, Partition}, _Child, _Type, Modules} <- PairChildren,
+               Modules == [yz_solrq_worker]],
     Workers.
 
 find_pair_supervisors() ->
     AllChildren = supervisor:which_children(yz_solrq_sup),
-    PairSups = [SupPid || {_IndexPartition, SupPid, _Type, Modules} <- AllChildren, Modules == [yz_solrq_queue_pair_sup]],
+    PairSups = [SupPid ||
+                {_IndexPartition, SupPid, _Type, Modules} <- AllChildren,
+                Modules == [yz_solrq_queue_pair_sup]],
     PairSups.
 
 %%%===================================================================
@@ -69,13 +73,9 @@ init([]) ->
 
     DrainMgrSpec = {yz_solrq_drain_mgr, {yz_solrq_drain_mgr, start_link, []}, permanent, 5000, worker, [yz_drain_mgr]},
 
-    QueueChildren = [queue_pair_spec(IndexPartition) ||
+    QueuePairSupervisors = [queue_pair_spec(IndexPartition) ||
                         IndexPartition <- required_queues()],
-    %% Using a one_for_all restart strategy as we write data to a hashed worker,
-    %% which then uses a random helper to send data to Solr itself - if we want to
-    %% make this one_for_one we will need to do more work monitoring the processes
-    %% and responding to crashes more carefully.
-    {ok, {{one_for_all, 10, 10}, [DrainMgrSpec | QueueChildren]}}.
+    {ok, {{one_for_one, 10, 10}, [DrainMgrSpec | QueuePairSupervisors]}}.
 
 %%%===================================================================
 %%% Internal functions
