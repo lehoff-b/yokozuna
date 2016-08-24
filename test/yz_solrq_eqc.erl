@@ -129,6 +129,7 @@ prop_ok() ->
                 KeyRes = make_keyres(Entries),
                 PE = entries_by_vnode(Entries),
                 Partitions = partitions(Entries),
+                Indexes = indexes(Entries),
 
                 meck:expect(
                     ibrowse, send_req,
@@ -141,16 +142,12 @@ prop_ok() ->
                 ),
 
                 ?PULSE(
-                    {Helper, IBrowseKeys, MeltsByIndex},
+                    {IBrowseKeys, MeltsByIndex},
                     begin
                         reset(), % restart the processes
-                        unlink_kill(yz_solrq_worker_0001),
-                        unlink_kill(yz_solrq_helper_0001),
                         unlink_kill(yz_solrq_eqc_fuse),
                         unlink_kill(yz_solrq_eqc_ibrowse),
-                        %%{ok, SolrQ} = yz_solrq_worker:start_link(yz_solrq_worker_0001),
-                        %% {ok, Helper} = yz_solrq_helper:start_link(yz_solrq_helper_0001),
-                        Helper = whereis(yz_solrq_helper_0001),
+                        start_solrqs(Partitions, Indexes),
                         {ok, _} = yz_solrq_eqc_fuse:start_link(),
                         {ok, _} = yz_solrq_eqc_ibrowse:start_link(KeyRes),
 
@@ -160,12 +157,10 @@ prop_ok() ->
                         wait_for_vnodes(Pids, timer:seconds(20)),
                         timer:sleep(500),
                         catch yz_solrq_eqc_ibrowse:wait(expected_keys(Entries)),
-                        {Helper,  yz_solrq_eqc_ibrowse:keys(), melts_by_index(Entries)}
+                        {yz_solrq_eqc_ibrowse:keys(), melts_by_index(Entries)}
                     end,
                     ?WHENFAIL(
                         begin
-                            %% eqc:format("SolrQ: ~p\n", [SolrQ]),
-                            eqc:format("Helper: ~p\n", [Helper]),
                             eqc:format("KeyRes: ~p\n", [KeyRes]),
                             eqc:format("keys(): ~p\n", [IBrowseKeys]),
                             eqc:format("expected_entry_keys: ~p\n", [expected_entry_keys(PE)]),
@@ -226,9 +221,6 @@ setup() ->
     application:start(compiler),
     application:start(goldrush),
 
-    yz_solrq:set_solrq_worker_tuple(1), % for yz_solrq_sup:regname
-    yz_solrq:set_solrq_helper_tuple(1), % for yz_solrq_helper_sup:regname
-
     meck:new(ibrowse),
     %% meck:expect(ibrowse, send_req, fun(_A, _B, _C, _D, _E, _F) ->
     %%                                     io:format("REQ: ~p\n", [{_A,_B,_C,_D,_E,_F}]),
@@ -282,9 +274,7 @@ setup() ->
 %    yz_pulseh:compile(yz_solrq_helper, Opts),
 
     %% And start up supervisors to own the solrq/solrq helper
-    {ok, _SolrqSup} = yz_solrq_sup:start_link(1,1),
-    %% {ok, HelperSup} = yz_solrq_helper_sup:start_link(1),
-    %% io:format(user, "SolrqSup = ~p HelperSup = ~p\n", [SolrqSup, HelperSup]),
+    {ok, _SolrqSup} = yz_solrq_sup:start_link(),
     ok.
 
 
@@ -510,7 +500,16 @@ unlink_kill(Name) ->
     end.
 
 partitions(Entries) ->
-    [P || {P, _Index, _Bucket, _Reason, _Result} <- Entries].
+    PartitionList = [P || {P, _Index, _Bucket, _Reason, _Result} <- Entries],
+    unique_entries(PartitionList).
+
+indexes(Entries) ->
+    IndexList = [Index || {_P, Index, _Bucket, _Reason, _Result} <- Entries],
+    unique_entries(IndexList).
+
+unique_entries(List) ->
+    Set = sets:from_list(List),
+    sets:to_list(Set).
 
 add_keys(Entries) ->
     [{P, Index, Bucket, make_key(Seq), Reason, Result} ||
@@ -634,3 +633,12 @@ eqc_warning_test() ->
     ok.
 
 -endif. % EQC
+
+
+start_solrqs(Partitions, Indexes) ->
+    IndexPartitions = [{Index, Partition} ||
+        Index <- Indexes,
+        Partition <- Partitions],
+    [QueueSup ||
+        {Index, Partition} <- IndexPartitions,
+        {ok, QueueSup} <- yz_solrq_queue_pair_sup:start_link(Index, Partition)].
