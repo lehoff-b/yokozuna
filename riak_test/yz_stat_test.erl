@@ -171,7 +171,7 @@ blow_fuses(Cluster, PBConn, Index, Bucket) ->
     yz_rt:set_purge_strategy(Cluster, ?PURGE_ONE),
     try
         [yz_rt:load_intercept_code(Node) || Node <- Cluster],
-        yz_rt:intercept_index_batch(Cluster, index_batch_throw_exception),
+        yz_rt:intercept_index_batch(Cluster, index_batch_returns_other_error),
         %%
         %% Send a message through each the indexq on the solrq, which
         %% will trip the fuse; however
@@ -180,7 +180,7 @@ blow_fuses(Cluster, PBConn, Index, Bucket) ->
         %%
         lager:info("Writing one entry to blow fuse..."),
         populate_data(PBConn, Bucket, 1),
-        yz_rt:wait_until_fuses_blown(Cluster, yz_solrq_worker_0001, [Index]),
+        yz_rt:wait_until_fuses_blown(Cluster, 0, [Index]),
         %%
         %% At this point, the indexq in yz_solrq_worker_0001 corresponding
         %% to the Index should be blown.
@@ -195,7 +195,7 @@ blow_fuses(Cluster, PBConn, Index, Bucket) ->
         %% fuse to reset.  Commit to Solr so that we can run a query.
         %%
         yz_rt:intercept_index_batch(Cluster, index_batch_call_orig),
-        yz_rt:wait_until_fuses_reset(Cluster, yz_solrq_worker_0001, [Index]),
+        yz_rt:wait_until_fuses_reset(Cluster, 0, [Index]),
         lager:info("Writing one last entry to set the threshold ok stat ..."),
         populate_data(PBConn, Bucket, 1),
         yz_rt:drain_solrqs(Cluster),
