@@ -35,6 +35,7 @@ solrq_test_() ->
         end,
         {timeout, 300,
             fun() ->
+                pulse:verbose([format]),
                 ?assert(eqc:quickcheck(?QC_OUT(eqc:testing_time(120, prop_ok()))))
             end
         }
@@ -128,8 +129,8 @@ prop_ok() ->
                 Entries = add_keys(Entries0),
                 KeyRes = make_keyres(Entries),
                 PE = entries_by_vnode(Entries),
-                Partitions = partitions(Entries),
-                Indexes = indexes(Entries),
+                Partitions = partitions(Entries0),
+                Indexes = indexes(Entries0),
 
                 meck:expect(
                     ibrowse, send_req,
@@ -145,6 +146,7 @@ prop_ok() ->
                     {IBrowseKeys, MeltsByIndex},
                     begin
                         reset(), % restart the processes
+                        unlink_kill(yz_solrq_sup),
                         unlink_kill(yz_solrq_eqc_fuse),
                         unlink_kill(yz_solrq_eqc_ibrowse),
                         start_solrqs(Partitions, Indexes),
@@ -153,7 +155,7 @@ prop_ok() ->
 
                         %% Issue the requests under pulse
                         Pids = ?MODULE:send_entries(PE),
-                        start_drains([undefind|Partitions]),
+                        yz_solrq_drain_mgr:drain(),
                         wait_for_vnodes(Pids, timer:seconds(20)),
                         timer:sleep(500),
                         catch yz_solrq_eqc_ibrowse:wait(expected_keys(Entries)),
@@ -263,6 +265,12 @@ setup() ->
     meck:new(solr_responses, [non_strict]),
     meck:expect(solr_responses, record, fun(_Keys, _Response) -> ok end),
 
+
+    meck:new(riak_core_ring_manager, [passthrough]),
+    meck:new(riak_core_ring, [passthrough]),
+    meck:new(yz_index, [passthrough]),
+
+
     %% Apply the pulse transform to the modules in the test
     %% Pulse compile solrq/solrq helper
     %% TODO dynamically pulse_instrument
@@ -273,8 +281,6 @@ setup() ->
 %    yz_pulseh:compile(yz_solrq, Opts),
 %    yz_pulseh:compile(yz_solrq_helper, Opts),
 
-    %% And start up supervisors to own the solrq/solrq helper
-    {ok, _SolrqSup} = yz_solrq_sup:start_link(),
     ok.
 
 
@@ -297,6 +303,9 @@ reset() ->
     meck:reset(ibrowse),
     meck:reset(solr_responses),
     meck:reset(yz_kv),
+    meck:reset(riak_core_ring_manager),
+    meck:reset(riak_core_ring),
+    meck:reset(yz_index),
     ok.
 
 
@@ -370,7 +379,8 @@ http_response_by_key() ->
 
 %% Look up an http response by the sequence batch it was in
 get_http_response(Key, RespByKey) ->
-    dict:fetch(Key, RespByKey).
+    %% TODO: put this back to fetch
+    dict:find(Key, RespByKey).
 
 
 melts_by_index(Entries) ->
@@ -500,12 +510,12 @@ unlink_kill(Name) ->
     end.
 
 partitions(Entries) ->
-    PartitionList = [P || {P, _Index, _Bucket, _Reason, _Result} <- Entries],
-    unique_entries(PartitionList).
+    _PartitionList = [P || {P, _Index, _Bucket, _Reason, _Result} <- Entries].
+    %% unique_entries(PartitionList).
 
 indexes(Entries) ->
-    IndexList = [Index || {_P, Index, _Bucket, _Reason, _Result} <- Entries],
-    unique_entries(IndexList).
+    _IndexList = [Index || {_P, Index, _Bucket, _Reason, _Result} <- Entries].
+    %% unique_entries(IndexList).
 
 unique_entries(List) ->
     Set = sets:from_list(List),
@@ -536,7 +546,8 @@ send_entries(PE) ->
 %% Send the entries for a vnode
 send_vnode_entries(Runner, P, Events)  ->
     self() ! {ohai, length(Events)},
-    [yz_solrq:index(Index, {Bucket, Key}, make_obj(Bucket, Key), Reason, P) || {Index, Bucket, Key, Reason, _Result} <- Events],
+    [yz_solrq:index(Index, {Bucket, Key}, make_obj(Bucket, Key), Reason, P)
+     || {Index, Bucket, Key, Reason, _Result} <- Events],
     receive
         {ohai, _Len} ->
             ok
@@ -545,39 +556,6 @@ send_vnode_entries(Runner, P, Events)  ->
 
 make_obj(B,K) ->
     riak_object:new(B, K, K, "application/yz_solrq_eqc"). % Set Key as value
-
-
-
-start_drains(Partitions) ->
-    spawn_link(fun() -> drain(Partitions) end).
-
-drain([]) ->
-    ok;
-drain([P | Rest] = _Partitions) ->
-    %% TODO fix this so that drain can be called (requires support for yz_solrq_sup
-    %ok = yz_solrq_sup:drain(),
-    try
-        {ok, Pid} = yz_solrq_drain_fsm:start_link([{partition, P}]),
-        Reference = erlang:monitor(process, Pid),
-        yz_solrq_drain_fsm:start_prepare(),
-        receive
-            {'DOWN', Reference, _Type, _Object, normal} ->
-                ok;
-            {'DOWN', Reference, _Type, _Object, Info} ->
-                {error, Info}
-        after 10000 ->
-            erlang:demonitor(Reference),
-            %lager:error("Warning!  Drain timed out.  Cancelling..."),
-            yz_solrq_drain_fsm:cancel(),
-            {error, timeout}
-        end
-    catch
-        _:badarg ->
-            %lager:error("Error! Drain in progress."),
-            {error, in_progress}
-    end,
-    timer:sleep(500),
-    drain(Rest).
 
 %% Wait for send_entries - should probably set a global timeout and
 %% and look for that instead
@@ -636,9 +614,9 @@ eqc_warning_test() ->
 
 
 start_solrqs(Partitions, Indexes) ->
-    IndexPartitions = [{Index, Partition} ||
-        Index <- Indexes,
-        Partition <- Partitions],
-    [QueueSup ||
-        {Index, Partition} <- IndexPartitions,
-        {ok, QueueSup} <- yz_solrq_queue_pair_sup:start_link(Index, Partition)].
+    %% Ring retrieval for required workers
+    meck:expect(riak_core_ring_manager, get_my_ring, fun() -> {ok, not_a_real_ring} end),
+    meck:expect(riak_core_ring, my_indices, fun(_) -> Partitions end),
+    meck:expect(yz_index, get_indexes_from_meta, fun() -> Indexes end),
+    %% And start up supervisors to own the solrq/solrq helper
+    {ok, _SolrqSup} = yz_solrq_sup:start_link().

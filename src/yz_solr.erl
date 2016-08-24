@@ -49,6 +49,21 @@
 -export_type([delete_op/0]).
 -export_type([ibrowse_config_key/0, ibrowse_config_value/0, ibrowse_config/0]).
 
+%% TODO: Dynamically pulse_instrument.
+-ifdef(PULSE).
+-compile(export_all).
+-compile({parse_transform, pulse_instrument}).
+-compile({pulse_replace_module, [{gen_server, pulse_gen_server}]}).
+
+-define(PULSE_DEBUG(S,F), pulse:format(S,F)).
+debug_entries(Entries) ->
+    [erlang:element(1, Entry) || Entry <- Entries].
+-else.
+-define(PULSE_DEBUG(S,F), ok).
+-endif.
+
+
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -212,7 +227,9 @@ index(Core, Docs, DelOps) ->
     end.
 
 index_batch(Core, Ops) ->
+    ?PULSE_DEBUG("index_batch: About to send entries. ~p~n", Ops),
     JSON = encode_json(Ops),
+    ?PULSE_DEBUG("index_batch: About to send JSON. ~p~n", JSON),
     maybe_make_http_request(Core, JSON).
 
 maybe_make_http_request(_Core, {error, _} = Error) ->

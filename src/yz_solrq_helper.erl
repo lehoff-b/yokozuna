@@ -184,6 +184,7 @@ update_solr(_Index, _LI, []) -> % nothing left after filtering fallbacks
 update_solr(Index, LI, Entries) ->
     case yz_kv:should_index(Index) of
         false ->
+            ?PULSE_DEBUG("Didn't send since yz_kv:should_index() returned false.", Entries),
             ok; % No need to send anything to SOLR, still need for AAE.
         _ ->
             case yz_fuse:check(Index) of
@@ -191,7 +192,7 @@ update_solr(Index, LI, Entries) ->
                     send_solr_ops_for_entries(Index, solr_ops(LI, Entries),
                                               Entries);
                 blown ->
-                    ?DEBUG("Fuse Blown: can't currently send solr "
+                    ?PULSE_DEBUG("Fuse Blown: can't currently send solr "
                            "operations for index ~s", [Index]),
                     {error, fuse_blown};
                 _ ->
@@ -268,6 +269,7 @@ get_ops_for_entry_action(Action, _ObjValues, LI, P, Obj, BKey,
                                        {error, tuple()}.
 send_solr_ops_for_entries(Index, Ops, Entries) ->
     T1 = os:timestamp(),
+    ?PULSE_DEBUG("send_solr_ops_for_entries: About to send entries. ~p", Entries),
     case yz_solr:index_batch(Index, prepare_ops_for_batch(Ops)) of
         ok ->
             yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),

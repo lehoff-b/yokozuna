@@ -66,7 +66,7 @@ keys() ->
     gen_server:call(?MODULE, keys).
 
 wait(Keys) ->
-    gen_server:call(?MODULE, {wait, Keys}, 1000).
+    gen_server:call(?MODULE, {wait, Keys}, 5000).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -100,7 +100,7 @@ handle_call(
         _ ->
             proceed
     end,
-    ?PULSE_DEBUG("yz_solrq_eqc_ibrowse: response: ~p~n", [{Keys, Res}]),
+    io:fwrite(user, "yz_solrq_eqc_ibrowse: response: ~p~n", [{Keys, Res}]),
     {reply, {Keys, Res}, State#state{written = NewWritten, failed = NewFailed}};
 
 handle_call(keys, _From, #state{written = Written} = State) ->
@@ -113,7 +113,6 @@ handle_call({wait, Keys}, From, #state{written=Written} = State) ->
         _ ->
             case lists:usort(Written) == lists:usort(Keys) of
                 true ->
-                    timer:sleep(500),
                     {reply, ok, State};
                 _ ->
                     ?PULSE_DEBUG("Process ~p waiting for keys...: ~p", [From, Keys]),
