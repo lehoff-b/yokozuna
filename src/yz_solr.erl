@@ -229,23 +229,27 @@ index(Core, Docs, DelOps) ->
 index_batch(Core, Ops) ->
     ?PULSE_DEBUG("index_batch: About to send entries. ~p~n", Ops),
     JSON = encode_json(Ops),
-    ?PULSE_DEBUG("index_batch: About to send JSON. ~p~n", JSON),
+    ?PULSE_DEBUG("index_batch: About to send JSON. ~p~n", [JSON]),
     maybe_make_http_request(Core, JSON).
 
 maybe_make_http_request(_Core, {error, _} = Error) ->
+    ?PULSE_DEBUG("Not making HTTP request due to error: ~p", [Error]),
     Error;
 maybe_make_http_request(Core, JSON) ->
     URL = ?FMT("~s/~s/update", [base_url(), Core]),
     Headers = [{content_type, "application/json"}],
     Opts = [{response_format, binary}],
-    case ibrowse:send_req(URL, Headers, post, JSON, Opts,
+    ?PULSE_DEBUG("About to send_req: ~p", [[URL, Headers, post, JSON, opts, ?YZ_SOLR_REQUEST_TIMEOUT]]),
+    Res = case ibrowse:send_req(URL, Headers, post, JSON, Opts,
                           ?YZ_SOLR_REQUEST_TIMEOUT) of
         {ok, "200", _, _} -> ok;
         {ok, "400", _, ErrBody} ->
             {error, {badrequest, ErrBody}};
         Err ->
             {error, {other, Err}}
-    end.
+    end,
+    %% ?PULSE_DEBUG("send_req result: ~p", [Res]),
+    Res.
 
 encode_json(Ops) ->
     JSON = try
@@ -253,6 +257,7 @@ encode_json(Ops) ->
            catch _:E ->
         {error, {bad_data, E}}
            end,
+    ?PULSE_DEBUG("Encoded JSON: ~p", [JSON]),
     JSON.
 
 %% @doc Determine if Solr is running.

@@ -134,6 +134,7 @@ do_batches(Index, BatchMax, Delivered, Entries) ->
         {ok, DeliveredInBatch} ->
             {ok, DeliveredInBatch ++ Delivered};
         {error, _Reason} ->
+            ?PULSE_DEBUG("Error handling batch:~p", [_Reason]),
             {error, Entries}
     end.
 
@@ -184,7 +185,7 @@ update_solr(_Index, _LI, []) -> % nothing left after filtering fallbacks
 update_solr(Index, LI, Entries) ->
     case yz_kv:should_index(Index) of
         false ->
-            ?PULSE_DEBUG("Didn't send since yz_kv:should_index() returned false.", Entries),
+            ?PULSE_DEBUG("Didn't send since yz_kv:should_index() returned false.", [Entries]),
             ok; % No need to send anything to SOLR, still need for AAE.
         _ ->
             case yz_fuse:check(Index) of
