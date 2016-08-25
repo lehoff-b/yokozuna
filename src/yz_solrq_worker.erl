@@ -450,8 +450,9 @@ drain_queue(State) ->
 
 %% @todo: after collapsing the records we might want to reconsider how we do this formatting...
 -spec internal_status(state()) -> status().
-internal_status(#state{} = State) ->
-    [{F, V} || {F, V} <- ?REC_PAIRS(state, State), F /= queue, F /= aux_queue].
+internal_status(#state{queue = Queue, aux_queue = AuxQueue} = State) ->
+    [{F, V} || {F, V} <- ?REC_PAIRS(state, State), F /= queue, F /= aux_queue]
+        ++ [{queue_len, queue:len(Queue)}, {aux_queue_len, queue:len(AuxQueue)}].
 
 %% @doc Check HWM, if we are not over it send a reply.
 maybe_send_reply(From, #state{} = State) ->

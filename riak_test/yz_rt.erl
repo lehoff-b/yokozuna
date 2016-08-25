@@ -870,7 +870,7 @@ set_hwm(Cluster, Hwm) ->
 set_purge_strategy(Cluster, PurgeStrategy) ->
     rpc:multicall(Cluster, yz_solrq, set_purge_strategy, [PurgeStrategy]).
 
--spec wait_until_fuses_blown(node() | cluster(), solrq_id(), [index_name()]) ->
+-spec wait_until_fuses_blown(node() | cluster(), p(), [index_name()]) ->
                                     ok | [ok].
 wait_until_fuses_blown(Cluster, Partition, Indices) when is_list(Cluster) ->
     [wait_until_fuses_blown(Node, Partition, Indices) || Node <- Cluster];
@@ -881,16 +881,16 @@ wait_until_fuses_blown(Node, Partition, Indices) ->
         end,
     check_fuse_status(Node, Partition, Indices, F).
 
--spec wait_until_fuses_reset(node() | cluster(), module(), [index_name()]) ->
+-spec wait_until_fuses_reset(node() | cluster(), p(), [index_name()]) ->
                                     ok | [ok].
-wait_until_fuses_reset(Cluster, SolrqId, Indices) when is_list(Cluster) ->
-    [wait_until_fuses_reset(Node, SolrqId, Indices) || Node <- Cluster];
-wait_until_fuses_reset(Node, SolrqId, Indices) ->
+wait_until_fuses_reset(Cluster, Partition, Indices) when is_list(Cluster) ->
+    [wait_until_fuses_reset(Node, Partition, Indices) || Node <- Cluster];
+wait_until_fuses_reset(Node, Partition, Indices) ->
     F = fun({Index, IndexQ}) ->
                 lager:info("Waiting for fuse to reset for index ~p", [{Index, IndexQ}]),
                 not proplists:get_value(fuse_blown, IndexQ)
         end,
-    check_fuse_status(Node, SolrqId, Indices, F).
+    check_fuse_status(Node, Partition, Indices, F).
 
 %% @private
 check_fuse_status(Node, Partition, Indices, FuseCheckFunction) ->
@@ -967,3 +967,25 @@ solr_hp(Node, Cluster) ->
 -spec reset_stats(cluster()) -> [[{list(), ok | {error, any()}}]].
 reset_stats(Cluster) ->
     [rpc:call(Node, yz_stat, reset, []) || Node <- Cluster].
+
+%% returns a dict of the form Solrq -> [BKey] that partitions BKeys
+%% by the solrqs they hash into.
+%% i.e., Union([BKey]) = BKeys and Intersection([BKey]) = []
+%% and for each BKey in BKeys, BKey is in dict(Solrq) iff BKey
+%% hashes to Solrq.
+-spec find_representatives(index_name(), [bkey()], non_neg_integer()) -> dict().
+find_representatives(Index, BKeys, RingSize) ->
+    lists:foldl(
+        fun({Solrq, BKey}, Accum) ->
+            dict:append(Solrq, BKey, Accum)
+        end,
+        dict:new(),
+        [{get_solrq(Index, BKey, RingSize), BKey} || BKey <- BKeys]).
+
+%% returns the solrq proc name that the BKey would hash into
+-spec get_solrq(index_name(), {bucket(), key()}, non_neg_integer()) -> atom().
+get_solrq(Index, BucketKey, RingSize) ->
+    Hash = chash:key_of(BucketKey),
+    Partition = riak_core_ring_util:partition_id_to_hash(
+        riak_core_ring_util:hash_to_partition_id(Hash, RingSize), RingSize),
+    yz_solrq:worker_regname(Index, Partition).

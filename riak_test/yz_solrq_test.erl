@@ -83,22 +83,24 @@
 confirm() ->
     Cluster = yz_rt:prepare_cluster(1, ?CONFIG),
     [PBConn|_] = PBConns = yz_rt:open_pb_conns(Cluster),
+    %%
+    %% Create all the indices, each of which is associated its own bucket type
+    %%
+    rt:pmap(
+        fun({{BucketType, _Name}, Index}) ->
+            ok = yz_rt:create_indexed_bucket_type(Cluster, BucketType, Index)
+        end,
+        [{Bucket, Index} || {Bucket, Index} <- lists:zip(?BUCKETS, ?INDEXES)]
+    ),
 
-    ok = yz_rt:create_indexed_bucket(PBConn, Cluster, ?BUCKET1, ?INDEX1),
     confirm_batch_size(Cluster, PBConn, ?BUCKET1, ?INDEX1),
     [confirm_hwm(Cluster, PBConn, ?BUCKET1, ?INDEX1, HWM) || HWM <- lists:seq(0, 10)],
 
-    ok = yz_rt:create_indexed_bucket(PBConn, Cluster, ?BUCKET2, ?INDEX2),
     confirm_draining(Cluster, PBConn, ?BUCKET2, ?INDEX2),
 
     confirm_drain_fsm_failure(Cluster),
     confirm_drain_fsm_timeout(Cluster),
     confirm_drain_fsm_kill(Cluster),
-
-    %% Buckets and Indexes 3 - 12.
-    [ok = yz_rt:create_indexed_bucket(PBConn, Cluster, Bucket, Index)
-     || {Bucket, Index} <- lists:zip(lists:nthtail(2, ?BUCKETS),
-                                   lists:nthtail(2, ?INDEXES))],
 
     %% confirm_requeue_undelivered must be last since it installs an interrupt
     %% that intentionally causes failures
@@ -497,20 +499,7 @@ find_representatives(Index, Bucket) ->
                   {Bucket, erlang:list_to_binary(erlang:integer_to_list(I))}
           end,
           lists:seq(1, 1000)),
-
-    lists:foldl(
-      fun({Solrq, BKey}, Accum) ->
-              dict:append(Solrq, BKey, Accum)
-      end,
-      dict:new(),
-      [{get_solrq(Index, BKey), BKey} || BKey <- BKeys]).
-
--spec get_solrq(index_name(), {bucket(), key()}) -> atom().
-get_solrq(Index, BucketKey) ->
-    Hash = chash:key_of(BucketKey),
-    Partition = riak_core_ring_util:partition_id_to_hash(
-        riak_core_ring_util:hash_to_partition_id(Hash, ?RING_SIZE), ?RING_SIZE),
-    yz_solrq:worker_regname(Index, Partition).
+    yz_rt:find_representatives(Index, BKeys, ?RING_SIZE).
 
 -spec put_no_contenttype_objects(pid(), bucket(), non_neg_integer()) -> non_neg_integer().
 put_no_contenttype_objects(PBConn, Bucket, Count) ->
@@ -553,7 +542,16 @@ put_bkey_objects(PBConn, BKeys) ->
     %%lager:info("Results: ~p", [Results]),
     lists:map(
       fun({BKey, {_Result, _}}) -> BKey end,
-      lists:filter(fun({_BKey, {Result, _}}) -> ok =:= Result end, Results)).
+      lists:filter(
+          fun({BKey, {Result, _}}) ->
+              case Result of
+                  ok -> true;
+                  _ ->
+                      lager:info("The result of a put was not ok.  BKey: ~p Result: ~p", [BKey, Result]),
+                      false
+              end
+          end,
+          Results)).
 
 verify_search_count(PBConn, Index, Count) ->
     {ok, {search_results, _R, _Score, Found}} =
