@@ -271,7 +271,7 @@ handle_cast({drain, DPid, Token, TargetPartition},
                    partition = QueueParitition} = State)
             when TargetPartition == undefined; TargetPartition == QueueParitition ->
     ?PULSE_DEBUG("drain{~p=DPid, ~p=Token, ~p=Partition}.  State: ~p~n",
-                 [debug_state(State), DPid, Token, TargetPartition]),
+                 [DPid, Token, TargetPartition, internal_status(State)]),
     NewState0 = case {queue:is_empty(Queue), InFlightLen} of
         {true, 0} ->
             State#state{draining = wait_for_drain_complete};
@@ -289,7 +289,7 @@ handle_cast({drain, DPid, Token, TargetPartition},
                 NewState0#state{drain_info = {DPid, Token}}
 
         end,
-    ?PULSE_DEBUG("drain.  NewState: ~p~n", [debug_state(NewState)]),
+    ?PULSE_DEBUG("drain.  NewState: ~p~n", [internal_status(NewState)]),
     {noreply, NewState};
 
 %% Totally ignore drain if it's not our partition

@@ -35,7 +35,7 @@ solrq_test_() ->
         end,
         {timeout, 300,
             fun() ->
-                pulse:verbose([format]),
+                %% pulse:verbose([format]),
                 ?assert(eqc:quickcheck(?QC_OUT(eqc:testing_time(120, prop_ok()))))
             end
         }
@@ -110,12 +110,6 @@ prop_ok() ->
             {Entries0, {HWM, Min, Max}},
             {gen_entries(), gen_params()},
             begin
-                true = lists:member({'PULSE-REPLACE-MODULE',1},
-                                           ?MODULE:module_info(exports)),
-                true = lists:member({'PULSE-REPLACE-MODULE',1},
-                                           yz_solrq_worker:module_info(exports)),
-                true = lists:member({'PULSE-REPLACE-MODULE',1},
-                                           yz_solrq_helper:module_info(exports)),
 
                 %% Reset the solrq/solrq helper processes
                 application:set_env(?YZ_APP_NAME, ?SOLRQ_HWM, HWM),
@@ -129,8 +123,8 @@ prop_ok() ->
                 Entries = add_keys(Entries0),
                 KeyRes = make_keyres(Entries),
                 PE = entries_by_vnode(Entries),
-                Partitions = partitions(Entries0),
-                Indexes = indexes(Entries0),
+                Partitions = partitions(Entries),
+                Indexes = indexes(Entries),
 
                 meck:expect(
                     ibrowse, send_req,
@@ -139,29 +133,24 @@ prop_ok() ->
                         {Keys, Res} = yz_solrq_eqc_ibrowse:get_response(B),
                         solr_responses:record(Keys, Res),
                         Res
-                    end
-                ),
+                    end),
+                reset(), % restart the processes
+                unlink_kill(yz_solrq_sup),
+                unlink_kill(yz_solrq_eqc_fuse),
+                unlink_kill(yz_solrq_eqc_ibrowse),
+                start_solrqs(Partitions, Indexes),
+                {ok, _} = yz_solrq_eqc_fuse:start_link(),
+                {ok, _} = yz_solrq_eqc_ibrowse:start_link(KeyRes),
 
-                ?PULSE(
-                    {IBrowseKeys, MeltsByIndex},
-                    begin
-                        reset(), % restart the processes
-                        unlink_kill(yz_solrq_sup),
-                        unlink_kill(yz_solrq_eqc_fuse),
-                        unlink_kill(yz_solrq_eqc_ibrowse),
-                        start_solrqs(Partitions, Indexes),
-                        {ok, _} = yz_solrq_eqc_fuse:start_link(),
-                        {ok, _} = yz_solrq_eqc_ibrowse:start_link(KeyRes),
-
-                        %% Issue the requests under pulse
-                        Pids = ?MODULE:send_entries(PE),
-                        yz_solrq_drain_mgr:drain(),
-                        wait_for_vnodes(Pids, timer:seconds(20)),
-                        timer:sleep(500),
-                        catch yz_solrq_eqc_ibrowse:wait(expected_keys(Entries)),
-                        {yz_solrq_eqc_ibrowse:keys(), melts_by_index(Entries)}
-                    end,
-                    ?WHENFAIL(
+                %% Issue the requests under pulse
+                Pids = ?MODULE:send_entries(PE),
+                yz_solrq_drain_mgr:drain(),
+                wait_for_vnodes(Pids, timer:seconds(20)),
+                timer:sleep(500),
+                catch yz_solrq_eqc_ibrowse:wait(expected_keys(Entries)),
+                IBrowseKeys = yz_solrq_eqc_ibrowse:keys(),
+                MeltsByIndex = melts_by_index(Entries),
+                ?WHENFAIL(
                         begin
                             eqc:format("KeyRes: ~p\n", [KeyRes]),
                             eqc:format("keys(): ~p\n", [IBrowseKeys]),
@@ -202,8 +191,6 @@ prop_ok() ->
                         %)
                         end
                     )
-
-                )
             end
         )
     ).
@@ -380,7 +367,7 @@ http_response_by_key() ->
 %% Look up an http response by the sequence batch it was in
 get_http_response(Key, RespByKey) ->
     %% TODO: put this back to fetch
-    dict:find(Key, RespByKey).
+    dict:fetch(Key, RespByKey).
 
 
 melts_by_index(Entries) ->
@@ -510,11 +497,11 @@ unlink_kill(Name) ->
     end.
 
 partitions(Entries) ->
-    _PartitionList = [P || {P, _Index, _Bucket, _Reason, _Result} <- Entries].
+    _PartitionList = [P || {P, _Index, _Bucket, _Key, _Reason, _Result} <- Entries].
     %% unique_entries(PartitionList).
 
 indexes(Entries) ->
-    _IndexList = [Index || {_P, Index, _Bucket, _Reason, _Result} <- Entries].
+    _IndexList = [Index || {_P, Index, _Bucket, _Key, _Reason, _Result} <- Entries].
     %% unique_entries(IndexList).
 
 unique_entries(List) ->
@@ -559,13 +546,13 @@ make_obj(B,K) ->
 
 %% Wait for send_entries - should probably set a global timeout and
 %% and look for that instead
-wait_for_vnodes(Pids, _Timeout) ->
+wait_for_vnodes(Pids, Timeout) ->
     RRef = make_ref(),
-    %% TRef = erlang:send_after(Timeout, self(), {timeout, RRef}),
+    TRef = erlang:send_after(Timeout, self(), {timeout, RRef}),
     wait_for_vnodes_msgs(Pids, RRef),
-    %% erlang:cancel_timer(TRef),
+    erlang:cancel_timer(TRef),
     receive
-        {timeout, _TRef} -> %todo - remove underscore if renable timeout
+        {timeout, TRef} -> %todo - remove underscore if renable timeout
             ok
     after
         0 ->
@@ -584,6 +571,14 @@ wait_for_vnodes_msgs([Pid | Pids], Ref) ->
             io:format(user, "Ignoring old timer ref ~p\n", [OldRef]),
             wait_for_vnodes_msgs([Pid|Pids], Ref)
     end.
+
+start_solrqs(Partitions, Indexes) ->
+    %% Ring retrieval for required workers
+    meck:expect(riak_core_ring_manager, get_my_ring, fun() -> {ok, not_a_real_ring} end),
+    meck:expect(riak_core_ring, my_indices, fun(_) -> unique_entries(Partitions) end),
+    meck:expect(yz_index, get_indexes_from_meta, fun() -> unique_entries(Indexes) end),
+    %% And start up supervisors to own the solrq/solrq helper
+    {ok, _SolrqSup} = yz_solrq_sup:start_link().
 
 %% ibrowse_requests() ->
 %%     [ibrowse_call_extract(Args, Res) || {_Pid, {ibrowse, send_req, Args, Res}} <- meck:history(ibrowse)].
@@ -611,12 +606,3 @@ eqc_warning_test() ->
     ok.
 
 -endif. % EQC
-
-
-start_solrqs(Partitions, Indexes) ->
-    %% Ring retrieval for required workers
-    meck:expect(riak_core_ring_manager, get_my_ring, fun() -> {ok, not_a_real_ring} end),
-    meck:expect(riak_core_ring, my_indices, fun(_) -> Partitions end),
-    meck:expect(yz_index, get_indexes_from_meta, fun() -> Indexes end),
-    %% And start up supervisors to own the solrq/solrq helper
-    {ok, _SolrqSup} = yz_solrq_sup:start_link().

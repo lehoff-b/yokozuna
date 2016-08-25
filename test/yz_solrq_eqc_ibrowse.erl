@@ -66,7 +66,7 @@ keys() ->
     gen_server:call(?MODULE, keys).
 
 wait(Keys) ->
-    gen_server:call(?MODULE, {wait, Keys}, 5000).
+    gen_server:call(?MODULE, {wait, Keys}, 1000).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -85,6 +85,7 @@ handle_call(
         expected=Expected
     } = State
 ) ->
+    ?PULSE_DEBUG("In get_response", []),
     SolrReqs = parse_solr_reqs(mochijson2:decode(B)),
     {Keys, Res, NewFailed} = get_response(SolrReqs, KeyRes, AlredyFailed),
     WrittenKeys = case Res of
@@ -100,7 +101,7 @@ handle_call(
         _ ->
             proceed
     end,
-    io:fwrite(user, "yz_solrq_eqc_ibrowse: response: ~p~n", [{Keys, Res}]),
+    ?PULSE_DEBUG("yz_solrq_eqc_ibrowse: response: ~p~n", [{Keys, Res}]),
     {reply, {Keys, Res}, State#state{written = NewWritten, failed = NewFailed}};
 
 handle_call(keys, _From, #state{written = Written} = State) ->
