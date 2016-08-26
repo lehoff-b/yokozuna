@@ -947,7 +947,7 @@ gen_keys(SeqMax) ->
         [{StatName::atom(), LHS::term(), Comparator::atom(), RHS::term()}])
                        -> boolean().
 check_stat_values(Stats, Pairs) ->
-    lager:info("STATS: ~p", [Stats]),
+    lager:debug("STATS: ~p", [Stats]),
     lager:info("Pairs: ~p", [Pairs]),
     StillWaiting = [S || S = {_, Value, Cmp, Arg} <- Pairs,
                          not (erlang:Cmp(Value, Arg))],

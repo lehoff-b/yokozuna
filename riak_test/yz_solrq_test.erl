@@ -83,24 +83,22 @@
 confirm() ->
     Cluster = yz_rt:prepare_cluster(1, ?CONFIG),
     [PBConn|_] = PBConns = yz_rt:open_pb_conns(Cluster),
-    %%
-    %% Create all the indices, each of which is associated its own bucket type
-    %%
-    rt:pmap(
-        fun({{BucketType, _Name}, Index}) ->
-            ok = yz_rt:create_indexed_bucket_type(Cluster, BucketType, Index)
-        end,
-        [{Bucket, Index} || {Bucket, Index} <- lists:zip(?BUCKETS, ?INDEXES)]
-    ),
 
+    ok = yz_rt:create_indexed_bucket(PBConn, Cluster, ?BUCKET1, ?INDEX1),
     confirm_batch_size(Cluster, PBConn, ?BUCKET1, ?INDEX1),
     [confirm_hwm(Cluster, PBConn, ?BUCKET1, ?INDEX1, HWM) || HWM <- lists:seq(0, 10)],
 
+    ok = yz_rt:create_indexed_bucket(PBConn, Cluster, ?BUCKET2, ?INDEX2),
     confirm_draining(Cluster, PBConn, ?BUCKET2, ?INDEX2),
 
     confirm_drain_fsm_failure(Cluster),
     confirm_drain_fsm_timeout(Cluster),
     confirm_drain_fsm_kill(Cluster),
+
+    %% Buckets and Indexes 3 - 12.
+    [ok = yz_rt:create_indexed_bucket(PBConn, Cluster, Bucket, Index)
+     || {Bucket, Index} <- lists:zip(lists:nthtail(2, ?BUCKETS),
+                                   lists:nthtail(2, ?INDEXES))],
 
     %% confirm_requeue_undelivered must be last since it installs an interrupt
     %% that intentionally causes failures
