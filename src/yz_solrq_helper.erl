@@ -33,16 +33,13 @@
 -export([index_batch/5]).
 
 %% TODO: Dynamically pulse_instrument.
--ifdef(PULSE).
--compile(export_all).
--compile({parse_transform, pulse_instrument}).
--compile({pulse_replace_module, [{gen_server, pulse_gen_server}]}).
-
--define(PULSE_DEBUG(S,F), pulse:format(S,F)).
-debug_entries(Entries) ->
-    [erlang:element(1, Entry) || Entry <- Entries].
+-ifdef(EQC).
+%% -define(EQC_DEBUG(S, F), ok).
+-define(EQC_DEBUG(S, F), eqc:format(S, F)).
+%%debug_entries(Entries) ->
+%%    [erlang:element(1, Entry) || Entry <- Entries].
 -else.
--define(PULSE_DEBUG(S,F), ok).
+-define(EQC_DEBUG(S, F), ok).
 -endif.
 
 -record(state, {}).
@@ -94,14 +91,14 @@ handle_call(BadMsg, _From, State) ->
     {reply, {error, {unknown, BadMsg}}, State}.
 
 handle_cast({batch, Index, BatchMax, QPid, Entries}, State) ->
-    ?PULSE_DEBUG("Handling batch for index ~p.  Entries: ~p~n", [Index, debug_entries(Entries)]),
+    %% ?EQC_DEBUG("Handling batch for index ~p.  Entries: ~p~n", [Index, debug_entries(Entries)]),
     Message = case do_batches(Index, BatchMax, [], Entries) of
         ok ->
             {length(Entries), ok};
         {ok, Delivered} ->
             {length(Delivered), {retry, remove(Delivered, Entries)}};
         {error, Undelivered} ->
-            ?PULSE_DEBUG("Error handling batch for index ~p.  Undelivered: ~p~n", [Index, debug_entries(Undelivered)]),
+            %% ?EQC_DEBUG("Error handling batch for index ~p.  Undelivered: ~p~n", [Index, debug_entries(Undelivered)]),
             {length(Entries) - length(Undelivered), {retry, Undelivered}}
     end,
     yz_solrq_worker:batch_complete(QPid, Message),
@@ -134,7 +131,7 @@ do_batches(Index, BatchMax, Delivered, Entries) ->
         {ok, DeliveredInBatch} ->
             {ok, DeliveredInBatch ++ Delivered};
         {error, _Reason} ->
-            ?PULSE_DEBUG("Error handling batch:~p", [_Reason]),
+            %% ?EQC_DEBUG("Error handling batch:~p", [_Reason]),
             {error, Entries}
     end.
 
@@ -185,7 +182,7 @@ update_solr(_Index, _LI, []) -> % nothing left after filtering fallbacks
 update_solr(Index, LI, Entries) ->
     case yz_kv:should_index(Index) of
         false ->
-            ?PULSE_DEBUG("Didn't send since yz_kv:should_index() returned false.", [Entries]),
+            %% ?EQC_DEBUG("Didn't send since yz_kv:should_index() returned false.", [Entries]),
             ok; % No need to send anything to SOLR, still need for AAE.
         _ ->
             case yz_fuse:check(Index) of
@@ -193,8 +190,8 @@ update_solr(Index, LI, Entries) ->
                     send_solr_ops_for_entries(Index, solr_ops(LI, Entries),
                                               Entries);
                 blown ->
-                    ?PULSE_DEBUG("Fuse Blown: can't currently send solr "
-                           "operations for index ~s", [Index]),
+                    %% ?EQC_DEBUG(                       "Fuse Blown: can't currently send solr "
+                    %%       "operations for index ~s", [Index]),
                     {error, fuse_blown};
                 _ ->
                     %% fuse table creation is idempotent and occurs on
@@ -270,7 +267,7 @@ get_ops_for_entry_action(Action, _ObjValues, LI, P, Obj, BKey,
                                        {error, tuple()}.
 send_solr_ops_for_entries(Index, Ops, Entries) ->
     T1 = os:timestamp(),
-    ?PULSE_DEBUG("send_solr_ops_for_entries: About to send entries. ~p", Entries),
+    %% ?EQC_DEBUG("send_solr_ops_for_entries: About to send entries. ~p", Entries),
     case yz_solr:index_batch(Index, prepare_ops_for_batch(Ops)) of
         ok ->
             yz_stat:index_end(Index, length(Ops), ?YZ_TIME_ELAPSED(T1)),
@@ -334,10 +331,12 @@ single_op_batch(Index, Op) ->
 
 -spec update_aae_and_repair_stats(solr_entries()) -> ok.
 update_aae_and_repair_stats(Entries) ->
+    ?EQC_DEBUG("In update_aae_and_repair_stats.", []),
     Repairs = lists:foldl(
                 fun({BKey, _Obj, Reason, P, ShortPL, Hash}, StatsD) ->
                         ReasonAction = get_reason_action(Reason),
                         Action = hashtree_action(ReasonAction, Hash),
+                        ?EQC_DEBUG("Updating AAE: ~p", Action),
                         yz_kv:update_hashtree(Action, P, ShortPL, BKey),
                         gather_counts({P, ShortPL, Reason}, StatsD)
                 end, dict:new(), Entries),

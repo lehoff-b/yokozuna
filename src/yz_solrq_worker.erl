@@ -38,13 +38,11 @@
 -export([drain/2, drain_complete/1]).
 
 %% TODO: Dynamically pulse_instrument.  See test/pulseh.erl
--ifdef(PULSE).
--compile(export_all).
--compile({parse_transform, pulse_instrument}).
--compile({pulse_replace_module, [{gen_server, pulse_gen_server}]}).
--define(PULSE_DEBUG(S,F), pulse:format(S,F)).
+-ifdef(EQC).
+-define(EQC_DEBUG(S, F), ok).
+%% -define(EQC_DEBUG(S, F), eqc:format(S, F)).
 -else.
--define(PULSE_DEBUG(S,F), ok).
+-define(EQC_DEBUG(S, F), ok).
 -endif.
 -define(COUNT_PER_REPORT, 20).
 
@@ -212,13 +210,13 @@ init([Index, Partition]) ->
     {ok, State1}.
 
 handle_call({index, E}, From, State0) ->
-    ?PULSE_DEBUG("index.  State: ~p~n", [debug_state(State0)]),
+    ?EQC_DEBUG("index.  State: ~p~n", [debug_state(State0)]),
     State1 = maybe_purge(State0),
     State2 = maybe_send_reply(From, State1),
     State3 = enqueue(E, State2),
     State4 = maybe_send_batch_to_helper(State3),
     FinalState = maybe_start_timer(State4),
-    ?PULSE_DEBUG("index.  NewState: ~p~n", [debug_state(FinalState)]),
+    ?EQC_DEBUG("index.  NewState: ~p~n", [debug_state(FinalState)]),
     {noreply, FinalState};
 handle_call(status, _From, #state{} = State) ->
     {reply, internal_status(State), State};
@@ -270,8 +268,8 @@ handle_cast({drain, DPid, Token, TargetPartition},
                    in_flight_len = InFlightLen,
                    partition = QueueParitition} = State)
             when TargetPartition == undefined; TargetPartition == QueueParitition ->
-    ?PULSE_DEBUG("drain{~p=DPid, ~p=Token, ~p=Partition}.  State: ~p~n",
-                 [DPid, Token, TargetPartition, internal_status(State)]),
+    ?EQC_DEBUG("drain{~p=DPid, ~p=Token, ~p=Partition}.  State: ~p~n",
+               [DPid, Token, TargetPartition, internal_status(State)]),
     NewState0 = case {queue:is_empty(Queue), InFlightLen} of
         {true, 0} ->
             State#state{draining = wait_for_drain_complete};
@@ -289,7 +287,7 @@ handle_cast({drain, DPid, Token, TargetPartition},
                 NewState0#state{drain_info = {DPid, Token}}
 
         end,
-    ?PULSE_DEBUG("drain.  NewState: ~p~n", [internal_status(NewState)]),
+    ?EQC_DEBUG("drain.  NewState: ~p~n", [internal_status(NewState)]),
     {noreply, NewState};
 
 %% Totally ignore drain if it's not our partition
@@ -332,12 +330,12 @@ handle_cast(healed_fuse, #state{} = State) ->
 %%
 handle_cast({batch_complete, {_NumDelivered, Result}},
         #state{} = State) ->
-    ?PULSE_DEBUG("batch_complete.  State: ~p~n", [debug_state(State)]),
+    ?EQC_DEBUG("batch_complete.  State: ~p~n", [debug_state(State)]),
     State1 = handle_batch(Result, State#state{in_flight_len = 0}),
     State2 = maybe_unblock_vnodes(State1),
     State3 = maybe_send_batch_to_helper(State2),
     State4 = maybe_start_timer(State3),
-    ?PULSE_DEBUG("batch_complete.  NewState: ~p~n", [debug_state(State4)]),
+    ?EQC_DEBUG("batch_complete.  NewState: ~p~n", [debug_state(State4)]),
     {noreply, State4};
 
 %%

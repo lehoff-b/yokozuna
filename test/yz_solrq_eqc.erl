@@ -8,13 +8,8 @@
 
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
-
 -include_lib("eunit/include/eunit.hrl").
-
--ifdef(PULSE).
--include_lib("pulse/include/pulse.hrl").
--compile([export_all, {parse_transform, pulse_instrument}]).
--compile({pulse_replace_module, [{gen_server, pulse_gen_server}]}).
+-compile([export_all]).
 
 -define(QC_OUT(P),
     eqc:on_output(fun(Str, Args) -> io:format(user, Str, Args) end, P)).
@@ -26,11 +21,10 @@
 solrq_test_() ->
     {setup,
         fun() ->
-            error_logger:tty(false),
-            pulse:start()
+            error_logger:tty(false)
         end,
         fun(_) ->
-            pulse:stop(),
+            unlink_kill(yz_solrq_sup),
             error_logger:tty(true)
         end,
         {timeout, 300,
@@ -123,8 +117,8 @@ prop_ok() ->
                 Entries = add_keys(Entries0),
                 KeyRes = make_keyres(Entries),
                 PE = entries_by_vnode(Entries),
-                Partitions = partitions(Entries),
-                Indexes = indexes(Entries),
+                Partitions = partitions(Entries0),
+                Indexes = indexes(Entries0),
 
                 meck:expect(
                     ibrowse, send_req,
@@ -135,7 +129,6 @@ prop_ok() ->
                         Res
                     end),
                 reset(), % restart the processes
-                unlink_kill(yz_solrq_sup),
                 unlink_kill(yz_solrq_eqc_fuse),
                 unlink_kill(yz_solrq_eqc_ibrowse),
                 start_solrqs(Partitions, Indexes),
@@ -367,7 +360,7 @@ http_response_by_key() ->
 %% Look up an http response by the sequence batch it was in
 get_http_response(Key, RespByKey) ->
     %% TODO: put this back to fetch
-    dict:fetch(Key, RespByKey).
+    dict:find(Key, RespByKey).
 
 
 melts_by_index(Entries) ->
@@ -497,11 +490,11 @@ unlink_kill(Name) ->
     end.
 
 partitions(Entries) ->
-    _PartitionList = [P || {P, _Index, _Bucket, _Key, _Reason, _Result} <- Entries].
+    _PartitionList = [P || {P, _Index, _Bucket, _Reason, _Result} <- Entries].
     %% unique_entries(PartitionList).
 
 indexes(Entries) ->
-    _IndexList = [Index || {_P, Index, _Bucket, _Key, _Reason, _Result} <- Entries].
+    _IndexList = [Index || {_P, Index, _Bucket, _Reason, _Result} <- Entries].
     %% unique_entries(IndexList).
 
 unique_entries(List) ->
@@ -578,7 +571,8 @@ start_solrqs(Partitions, Indexes) ->
     meck:expect(riak_core_ring, my_indices, fun(_) -> unique_entries(Partitions) end),
     meck:expect(yz_index, get_indexes_from_meta, fun() -> unique_entries(Indexes) end),
     %% And start up supervisors to own the solrq/solrq helper
-    {ok, _SolrqSup} = yz_solrq_sup:start_link().
+    _ = yz_solrq_sup:start_link(),
+    _ = yz_solrq_sup:sync_active_queue_pairs().
 
 %% ibrowse_requests() ->
 %%     [ibrowse_call_extract(Args, Res) || {_Pid, {ibrowse, send_req, Args, Res}} <- meck:history(ibrowse)].
@@ -589,14 +583,6 @@ start_solrqs(Partitions, Indexes) ->
 debug_history(Mods) ->
     [io:format("~p\n====\n~p\n\n", [Mod, meck:history(Mod)]) || Mod <- Mods],
     ok.
-
--else. %% PULSE is not defined
-
-pulse_warning_test() ->
-    ?debugMsg("WARNING: PULSE is not defined.  Run `make pulse` to execute this test."),
-    ok.
-
--endif. % PULSE
 
 -else. %% EQC is not defined
 
